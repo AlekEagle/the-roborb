@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "outDir": "./dist/",
+    "sourceMap": true,
+    "noImplicitAny": true,
+    "module": "NodeNext",
+    "target": "ES2020",
+    "rootDir": "./src/",
+    "resolveJsonModule": true,
+    "typeRoots": ["node_modules/@types"],
+    "alwaysStrict": true,
+    "esModuleInterop": true,
+    "moduleResolution": "nodenext",
+    "strictNullChecks": true
+  },
+  "include": ["./src/**/*"],
+  "ts-node": {
+    "esm": true,
+    "experimentalSpecifierResolution": "node",
+    "transpileOnly": true
+  }
+}

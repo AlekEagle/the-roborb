@@ -1,0 +1,15 @@
+{
+  "name": "the-roborb",
+  "version": "1.0.0",
+  "description": "A Discord bot that orbifies anything you desire.",
+  "type": "module",
+  "main": "dist/index.js",
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "oceanic.js": "^1.11.3-dev.d9f2e80"
+  }
+}
