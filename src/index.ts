@@ -2,13 +2,18 @@ import {
   ApplicationCommandOptionTypes,
   ApplicationCommandTypes,
   Client,
-  CreateApplicationCommandOptions,
+  CommandInteraction,
+  Message,
 } from 'oceanic.js';
 import { config } from 'dotenv';
 import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 import { writeFile, readFile, mkdir } from 'node:fs/promises';
+import OrbQueue from './OrbQueue.js';
 
 config();
+
+const execPromise = promisify(exec);
 
 const client = new Client({
   auth: `Bot ${process.env.TOKEN}`,
@@ -35,20 +40,77 @@ const commands: any = [
   },
 ];
 
+const orbQueue = new OrbQueue();
+
 client.on('ready', async () => {
   console.log('Client is ready!');
   await client.application.bulkEditGlobalCommands(commands);
   await client.application.bulkEditGuildCommands(TEST_SERVER, commands);
 });
 
+async function orbify(interactionID: string, filename: string) {
+  const { interaction, interactionMessage } = orbQueue.orbs.find(
+    (entry) => entry.interaction.id === interactionID,
+  )!;
+  try {
+    // Orbify the image
+    await interactionMessage.edit({
+      content: 'Orbifying your image with blender...',
+    });
+    const orbify = await execPromise(
+      `blender -y -b blender-orbifier/sphere.blend -- --texture "${filename}" --output /tmp/orbs/${interaction.id}/orb.mp4`,
+    );
+
+    console.log(orbify.stdout);
+
+    await interactionMessage.edit({
+      content: 'Converting your orb into a gif...',
+    });
+    const convert = await execPromise(
+      `./blender-orbifier/gif-script.sh /tmp/orbs/${interaction.id}/orb.mp4 /tmp/orbs/${interaction.id}/orb`,
+    );
+
+    console.log(convert.stdout);
+
+    interactionMessage.edit({
+      content: 'Uploading your orb...',
+    });
+    const orb = await client.rest.channels.createMessage(
+      interaction.channelID,
+      {
+        content: `Here is your orb, ${interaction.member?.mention}!`,
+        files: [
+          {
+            name: 'orb.gif',
+            contents: await readFile(
+              `/tmp/orbs/${interaction.id}/orb-256x256.gif`,
+            ),
+          },
+        ],
+      },
+    );
+
+    orbQueue.completeOrb(interaction.id);
+
+    interactionMessage.delete();
+  } catch (e) {
+    console.error(e);
+    interaction.reply({
+      content: 'An error occurred while processing your request.',
+    });
+  }
+}
+
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isCommandInteraction()) return;
   if (!interaction.isChatInputCommand()) return;
   switch (interaction.data.name) {
     case 'orbify': {
-      const interactionMessage = await interaction.reply({
-        content: 'Downloading your image...',
-      });
+      const interactionMessage = await (
+        await interaction.reply({
+          content: 'Downloading your image...',
+        })
+      ).getMessage()!;
 
       const image = interaction.data.options.getAttachment('image')!;
 
@@ -62,53 +124,22 @@ client.on('interactionCreate', async (interaction) => {
         .pop()}`;
       await writeFile(filename, imageBuffer);
 
-      // Orbify the image
-      interactionMessage.message?.edit({
-        content: 'Orbifying your image with blender...',
-      });
-      const orbify = exec(
-        `blender -y -b blender-orbifier/sphere.blend -- --texture "${filename}" --output /tmp/orbs/${interaction.id}/orb.mp4`,
-      );
+      // Add the image to the orb queue
 
-      orbify.stdout?.on('data', (data) => {
-        console.log(data);
-      });
-
-      orbify.on('close', () => {
-        interactionMessage.message?.edit({
-          content: 'Converting your orb into a gif...',
+      if (orbQueue.addOrb(interaction, interactionMessage) !== 0) {
+        interactionMessage.edit({
+          content: `Your orb is currently in position ${orbQueue.getOrbPosition(
+            interaction.id,
+          )}. `,
         });
-        const convert = exec(
-          `./blender-orbifier/gif-script.sh /tmp/orbs/${interaction.id}/orb.mp4 /tmp/${interaction.id}/orb`,
-        );
-
-        convert.stdout?.on('data', (data) => {
-          console.log(data);
+        orbQueue.on('orbComplete', async () => {
+          if (orbQueue.getOrbPosition(interaction.id) === 0) {
+            await orbify(interaction.id, filename);
+          }
         });
-
-        convert.on('close', async () => {
-          interactionMessage.message?.edit({
-            content: 'Uploading your orb...',
-          });
-          const orb = await client.rest.channels.createMessage(
-            interaction.channelID,
-            {
-              content: 'Here is your orb!',
-              files: [
-                {
-                  name: 'orb.gif',
-                  contents: await readFile(
-                    `/tmp/orbs/${interaction.id}/orb-256x256.gif`,
-                  ),
-                },
-              ],
-            },
-          );
-
-          interactionMessage.message?.delete();
-        });
-      });
-
+      } else {
+        await orbify(interaction.id, filename);
+      }
       break;
     }
   }
