@@ -1,7 +1,11 @@
 import {
   ApplicationCommandOptionTypes,
   ApplicationCommandTypes,
+  ApplicationIntegrationTypes,
   Client,
+  CommandInteraction,
+  CreateApplicationCommandOptions,
+  InteractionContextTypes,
   Member,
 } from 'oceanic.js';
 import { config } from 'dotenv';
@@ -22,11 +26,20 @@ const client = new Client({
   },
 });
 
-const commands: any = [
+const commands: CreateApplicationCommandOptions[] = [
   {
     type: ApplicationCommandTypes.CHAT_INPUT,
     name: 'orbify',
     description: 'Turn your beloved image into an equally beloved orb.',
+    integrationTypes: [
+      ApplicationIntegrationTypes.GUILD_INSTALL,
+      ApplicationIntegrationTypes.USER_INSTALL,
+    ],
+    contexts: [
+      InteractionContextTypes.GUILD,
+      InteractionContextTypes.BOT_DM,
+      InteractionContextTypes.PRIVATE_CHANNEL,
+    ],
     options: [
       {
         type: ApplicationCommandOptionTypes.SUB_COMMAND,
@@ -68,11 +81,38 @@ const commands: any = [
           {
             type: ApplicationCommandOptionTypes.BOOLEAN,
             name: 'prefer-server-avatar',
-            description: 'Prefer the server avatar over the user avatar.',
+            description:
+              'Prefer the server avatar over the user avatar. (Has no effect if used in a DM)',
             required: false,
           },
         ],
       },
+    ],
+  },
+  {
+    type: ApplicationCommandTypes.MESSAGE,
+    name: 'Orbify this image',
+    integrationTypes: [
+      ApplicationIntegrationTypes.GUILD_INSTALL,
+      ApplicationIntegrationTypes.USER_INSTALL,
+    ],
+    contexts: [
+      InteractionContextTypes.GUILD,
+      InteractionContextTypes.BOT_DM,
+      InteractionContextTypes.PRIVATE_CHANNEL,
+    ],
+  },
+  {
+    type: ApplicationCommandTypes.USER,
+    name: 'Orbify this user',
+    integrationTypes: [
+      ApplicationIntegrationTypes.GUILD_INSTALL,
+      ApplicationIntegrationTypes.USER_INSTALL,
+    ],
+    contexts: [
+      InteractionContextTypes.GUILD,
+      InteractionContextTypes.BOT_DM,
+      InteractionContextTypes.PRIVATE_CHANNEL,
     ],
   },
 ];
@@ -84,8 +124,48 @@ client.on('ready', async () => {
   await client.application.bulkEditGlobalCommands(commands);
 });
 
+async function checkForGraphicalData(filename: string): Promise<boolean> {
+  try {
+    const check = await execPromise(
+      `ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${filename}"`,
+    );
+    return check.stdout.trim() === 'video';
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+
+async function addToQueueAndWork(
+  interaction: CommandInteraction,
+  filename: string,
+) {
+  if (orbQueue.addOrb(interaction) !== 0) {
+    await interaction.editOriginal({
+      content: `Hang on, I'm already working on an orb, you'll have to wait. Your place in queue is: \`${orbQueue.getOrbPosition(
+        interaction.id,
+      )}\`.`,
+    });
+    async function onOrbComplete() {
+      if (orbQueue.getOrbPosition(interaction.id) === 0) {
+        orbQueue.off('orbComplete', onOrbComplete);
+        await orbify(interaction.id, filename);
+      } else {
+        (interaction as CommandInteraction).editOriginal({
+          content: `An orb ahead of you in the queue is complete! Your new place in the queue is: \`${orbQueue.getOrbPosition(
+            interaction.id,
+          )}\`.`,
+        });
+      }
+    }
+    orbQueue.on('orbComplete', onOrbComplete);
+  } else {
+    await orbify(interaction.id, filename);
+  }
+}
+
 async function orbify(interactionID: string, filename: string) {
-  const { interaction, interactionMessage } = orbQueue.orbs.find(
+  const { interaction } = orbQueue.orbs.find(
     (entry) => entry.interaction.id === interactionID,
   )!;
   try {
@@ -93,7 +173,7 @@ async function orbify(interactionID: string, filename: string) {
     const isGif = filename.endsWith('.gif');
     // if it is a gif, convert it to a mp4
     if (isGif) {
-      await interactionMessage.edit({
+      await interaction.editOriginal({
         content: 'Converting your gif to a format that blender can use...',
       });
       const convert = await execPromise(
@@ -106,7 +186,7 @@ async function orbify(interactionID: string, filename: string) {
     }
 
     // Orbify the image
-    await interactionMessage.edit({
+    await interaction.editOriginal({
       content: 'Orbifying your image with blender...',
     });
     const orbify = await execPromise(
@@ -115,7 +195,7 @@ async function orbify(interactionID: string, filename: string) {
 
     // console.log(orbify.stdout);
 
-    await interactionMessage.edit({
+    await interaction.editOriginal({
       content: 'Converting your orb into a gif...',
     });
     const convert = await execPromise(
@@ -124,27 +204,24 @@ async function orbify(interactionID: string, filename: string) {
 
     // console.log(convert.stdout);
 
-    interactionMessage.edit({
+    await interaction.editOriginal({
       content: 'Uploading your orb...',
     });
-    const orb = await client.rest.channels.createMessage(
-      interaction.channelID,
-      {
-        content: `Here is your orb, ${interaction.member?.mention}!`,
-        files: [
-          {
-            name: 'orb.gif',
-            contents: await readFile(
-              `/tmp/orbs/${interaction.id}/orb-256x256.gif`,
-            ),
-          },
-        ],
-      },
-    );
+    const orb = await interaction.createFollowup({
+      content: `Here is your orb, ${interaction.user.mention}!`,
+      files: [
+        {
+          name: 'orb.gif',
+          contents: await readFile(
+            `/tmp/orbs/${interaction.id}/orb-256x256.gif`,
+          ),
+        },
+      ],
+    });
 
     orbQueue.completeOrb(interaction.id);
 
-    interactionMessage.delete();
+    await interaction.deleteOriginal();
   } catch (e) {
     console.error(e);
     interaction.reply({
@@ -155,105 +232,208 @@ async function orbify(interactionID: string, filename: string) {
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isCommandInteraction()) return;
-  if (!interaction.isChatInputCommand()) return;
-  switch (interaction.data.name) {
-    case 'orbify':
-      const interactionMessage = await (
+
+  // ==== USER COMMANDS ====
+  if (interaction.isUserCommand()) {
+    switch (interaction.data.name) {
+      case 'Orbify this user':
+        const targetUser =
+          interaction.data.resolved.members?.first()! ??
+          interaction.data.resolved.users?.first()!;
+        const isAnimated =
+          targetUser.avatar && targetUser.avatar.startsWith('a_')
+            ? true
+            : false;
+        const avatarURL = targetUser.avatarURL(
+          isAnimated ? 'gif' : 'png',
+          2048,
+        );
+        const filename = `/tmp/orbs/${interaction.id}/orb-input.${isAnimated ? 'gif' : 'png'}`;
+
         await interaction.reply({
           content: 'Downloading your image...',
-        })
-      ).getMessage()!;
+        });
 
-      let imageBuffer: Uint8Array;
-      let filename: string;
+        const imageBuffer = await fetch(avatarURL).then((res) => res.bytes());
 
-      switch (interaction.data.options.getSubCommand(true)[0]) {
-        case 'image':
-          const image = interaction.data.options.getAttachment('image')!;
-          imageBuffer = await fetch(image.url).then((res) => res.bytes());
-          filename = `/tmp/orbs/${interaction.id}/orb-input.${image.filename
-            .split('.')
-            .pop()}`;
-          break;
-        case 'url':
-          const url = interaction.data.options.getString('url')!;
-          imageBuffer = await fetch(url).then((res) => res.bytes());
+        await mkdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+        await writeFile(filename, imageBuffer);
 
-          const parsedUrl = new URL(url);
+        // Check if the downloaded file contains graphical data (is an image or image sequence/video)
+        const isGraphical = await checkForGraphicalData(filename);
+        if (!isGraphical) {
+          await interaction.editOriginal({
+            content: 'The file you provided is not an image, gif, or video.',
+          });
+          return;
+        }
 
-          filename = `/tmp/orbs/${interaction.id}/orb-input.${parsedUrl.pathname
-            .split('/')
-            .pop()!
-            .split('.')
-            .pop()}`;
-          break;
-        case 'user':
-          const user =
-            interaction.data.options.getMember('user') ??
-            interaction.member ??
-            interaction.user;
-          const preferServerAvatar =
-            interaction.data.options.getBoolean('prefer-server-avatar') ??
-            false;
-          let avatarURL: string, isAnimated: boolean;
-          if (user instanceof Member) {
-            if (preferServerAvatar) {
+        // Add the image to the orb queue
+        addToQueueAndWork(interaction, filename);
+        break;
+      default:
+        interaction.editOriginal({
+          content: 'how',
+        });
+        return;
+    }
+  }
+
+  // ==== MESSAGE COMMANDS ====
+  if (interaction.isMessageCommand()) {
+    switch (interaction.data.name) {
+      case 'Orbify this image':
+        const attachment = interaction.data.resolved.messages
+          .first()
+          ?.attachments.first(); // Get the first attachment from the message
+        if (!attachment) {
+          await interaction.reply({
+            content:
+              'The message you used this command on does not contain any attachments.',
+            flags: 64, // Ephemeral
+          });
+          return;
+        }
+
+        // Check if the attachment is an image or a video (to allow for video or image sequence inputs)
+        if (
+          !attachment.contentType?.startsWith('image/') &&
+          !attachment.contentType?.startsWith('video/')
+        ) {
+          await interaction.reply({
+            content:
+              'The attachment in the message you used this command on is not an image or video.',
+            flags: 64, // Ephemeral
+          });
+          return;
+        }
+
+        await interaction.reply({
+          content: 'Downloading your image...',
+        });
+
+        const imageBuffer = await fetch(attachment.url).then((res) =>
+          res.bytes(),
+        );
+        const filename = `/tmp/orbs/${interaction.id}/orb-input.${attachment.filename
+          .split('.')
+          .pop()}`;
+
+        await mkdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+        await writeFile(filename, imageBuffer);
+
+        // Check if the downloaded file contains graphical data (is an image or image sequence/video)
+        const isGraphical = await checkForGraphicalData(filename);
+        if (!isGraphical) {
+          await interaction.editOriginal({
+            content: 'The file you provided is not an image, gif, or video.',
+          });
+          return;
+        }
+
+        // Add the image to the orb queue
+        addToQueueAndWork(interaction, filename);
+        break;
+      default:
+        interaction.editOriginal({
+          content: 'how',
+        });
+        return;
+    }
+  }
+
+  // ==== SLASH COMMANDS ====
+  if (interaction.isChatInputCommand()) {
+    switch (interaction.data.name) {
+      case 'orbify':
+        await interaction.reply({
+          content: 'Downloading your image...',
+        });
+
+        let imageBuffer: Uint8Array;
+        let filename: string;
+
+        switch (interaction.data.options.getSubCommand(true)[0]) {
+          case 'image':
+            const image = interaction.data.options.getAttachment('image')!;
+            imageBuffer = await fetch(image.url).then((res) => res.bytes());
+            filename = `/tmp/orbs/${interaction.id}/orb-input.${image.filename
+              .split('.')
+              .pop()}`;
+            break;
+          case 'url':
+            const url = interaction.data.options.getString('url')!;
+            imageBuffer = await fetch(url).then((res) => res.bytes());
+
+            const parsedUrl = new URL(url);
+
+            filename = `/tmp/orbs/${interaction.id}/orb-input.${parsedUrl.pathname
+              .split('/')
+              .pop()!
+              .split('.')
+              .pop()}`;
+            break;
+          case 'user':
+            const user =
+              interaction.data.options.getMember('user') ?? // Get the member if possible (will be null if the command is used in a DM or if the user is not in the server)
+              interaction.data.options.getUser('user') ?? // Get the user (will always be present, even in a DM, only returns null if the user cannot be found or if the option is not provided)
+              interaction.member ?? // Get the member from the interaction (will be present if the command is used in a guild, but not in a DM)
+              interaction.user; // Fallback to the user from the interaction (will always be present)
+            const preferServerAvatar =
+              interaction.data.options.getBoolean('prefer-server-avatar') ??
+              false;
+            let avatarURL: string, isAnimated: boolean;
+            if (user instanceof Member) {
+              if (preferServerAvatar) {
+                isAnimated =
+                  user.avatar && user.avatar.startsWith('a_') ? true : false;
+                avatarURL = user.avatarURL(isAnimated ? 'gif' : 'png', 2048);
+              } else {
+                isAnimated = user.user.avatar!.startsWith('a_') ? true : false;
+                avatarURL = user.user.avatarURL(
+                  isAnimated ? 'gif' : 'png',
+                  2048,
+                );
+              }
+            } else {
               isAnimated =
                 user.avatar && user.avatar.startsWith('a_') ? true : false;
               avatarURL = user.avatarURL(isAnimated ? 'gif' : 'png', 2048);
-            } else {
-              isAnimated = user.user.avatar!.startsWith('a_') ? true : false;
-              avatarURL = user.user.avatarURL(isAnimated ? 'gif' : 'png', 2048);
             }
-          } else {
-            isAnimated =
-              user.avatar && user.avatar.startsWith('a_') ? true : false;
-            avatarURL = user.avatarURL(isAnimated ? 'gif' : 'png', 2048);
-          }
-          filename = `/tmp/orbs/${interaction.id}/orb-input.${
-            isAnimated ? 'gif' : 'png'
-          }`;
-          imageBuffer = await fetch(avatarURL).then((res) => res.bytes());
-          break;
-        default:
-          interactionMessage.edit({
-            content: 'An error occurred while processing your orb.',
+            filename = `/tmp/orbs/${interaction.id}/orb-input.${
+              isAnimated ? 'gif' : 'png'
+            }`;
+            imageBuffer = await fetch(avatarURL).then((res) => res.bytes());
+            break;
+          default:
+            interaction.editOriginal({
+              content: 'An error occurred while processing your orb.',
+            });
+            return;
+        }
+
+        await mkdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+
+        await writeFile(filename, imageBuffer);
+
+        // Check if the downloaded file contains graphical data (is an image or image sequence/video)
+        const isGraphical = await checkForGraphicalData(filename);
+        if (!isGraphical) {
+          await interaction.editOriginal({
+            content: 'The file you provided is not an image, gif, or video.',
           });
           return;
-      }
+        }
 
-      await mkdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
-
-      await writeFile(filename, imageBuffer);
-
-      // Check if the downloaded file contains graphical data (is an image or image sequence/video)
-      const check = await execPromise(
-        `ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${filename}"`,
-      );
-      if (check.stdout.trim() !== 'video') {
-        interactionMessage.edit({
-          content: 'The file you provided is not an image, gif, or video.',
+        // Add the image to the orb queue
+        addToQueueAndWork(interaction, filename);
+        break;
+      default:
+        interaction.editOriginal({
+          content: 'how',
         });
         return;
-      }
-
-      // Add the image to the orb queue
-
-      if (orbQueue.addOrb(interaction, interactionMessage) !== 0) {
-        interactionMessage.edit({
-          content: `Hang on, I'm already working on an orb, you'll have to wait. Your place in queue is: \`${orbQueue.getOrbPosition(
-            interaction.id,
-          )}\`.`,
-        });
-        orbQueue.on('orbComplete', async () => {
-          if (orbQueue.getOrbPosition(interaction.id) === 0) {
-            await orbify(interaction.id, filename);
-          }
-        });
-      } else {
-        await orbify(interaction.id, filename);
-      }
-      break;
+    }
   }
 });
 

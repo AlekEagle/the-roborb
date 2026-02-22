@@ -3,7 +3,6 @@ import EventEmitter from 'events';
 
 interface OrbQueueEntry {
   interaction: CommandInteraction;
-  interactionMessage: Message;
 }
 
 export default class OrbQueue extends EventEmitter {
@@ -13,11 +12,8 @@ export default class OrbQueue extends EventEmitter {
     super();
   }
 
-  public addOrb(
-    interaction: CommandInteraction,
-    interactionMessage: Message,
-  ): number {
-    return this.orbs.push({ interaction, interactionMessage }) - 1;
+  public addOrb(interaction: CommandInteraction): number {
+    return this.orbs.push({ interaction }) - 1;
   }
 
   public removeOrb(interactionID: string): void {
