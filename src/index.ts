@@ -4,15 +4,15 @@ import {
   ApplicationIntegrationTypes,
   Client,
   CommandInteraction,
-  CreateApplicationCommandOptions,
   InteractionContextTypes,
   Member,
 } from 'oceanic.js';
+import type { CreateApplicationCommandOptions } from 'oceanic.js';
 import { config } from 'dotenv';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile, readFile, mkdir, rmdir, rename } from 'node:fs/promises';
-import OrbQueue from './OrbQueue.js';
+import OrbQueue from './OrbQueue.ts';
 import { URL } from 'node:url';
 
 config();
