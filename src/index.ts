@@ -11,7 +11,7 @@ import {
 import { config } from 'dotenv';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFile, readFile, mkdir } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, rmdir, rename } from 'node:fs/promises';
 import OrbQueue from './OrbQueue.js';
 import { URL } from 'node:url';
 
@@ -91,7 +91,7 @@ const commands: CreateApplicationCommandOptions[] = [
   },
   {
     type: ApplicationCommandTypes.MESSAGE,
-    name: 'Orbify this image',
+    name: 'Orbify this thingy',
     integrationTypes: [
       ApplicationIntegrationTypes.GUILD_INSTALL,
       ApplicationIntegrationTypes.USER_INSTALL,
@@ -161,6 +161,34 @@ async function addToQueueAndWork(
     orbQueue.on('orbComplete', onOrbComplete);
   } else {
     await orbify(interaction.id, filename);
+  }
+}
+
+async function resolveFileTypeAndFinalizePath(
+  buf: Uint8Array<ArrayBufferLike>,
+  interaction: CommandInteraction,
+): Promise<string | null> {
+  try {
+    await mkdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+    await writeFile(`/tmp/orbs/${interaction.id}/tempfile`, buf);
+    const fileType = (
+      await execPromise(
+        `file --extension -b /tmp/orbs/${interaction.id}/tempfile`,
+      )
+    ).stdout
+      .trim()
+      .split('/')[0];
+    if (fileType !== '') {
+      await rename(
+        `/tmp/orbs/${interaction.id}/tempfile`,
+        `/tmp/orbs/${interaction.id}/orb-input.${fileType}`,
+      );
+      return `/tmp/orbs/${interaction.id}/orb-input.${fileType}`;
+    }
+    return null;
+  } catch (e) {
+    console.error(e);
+    return null;
   }
 }
 
@@ -282,31 +310,24 @@ client.on('interactionCreate', async (interaction) => {
   // ==== MESSAGE COMMANDS ====
   if (interaction.isMessageCommand()) {
     switch (interaction.data.name) {
-      case 'Orbify this image':
-        const attachment = interaction.data.resolved.messages
-          .first()
-          ?.attachments.first(); // Get the first attachment from the message
+      case 'Orbify this thingy':
+        const message = interaction.data.resolved.messages.first()!;
+        const attachment =
+          message.attachments.first() ?? // Get the first attachment if it exists
+          message.embeds[0].thumbnail ?? // If no attachment, get the thumbnail of the first embed if it exists
+          message.embeds[0].image; // If no thumbnail, get the image of the first embed if it exists
+
         if (!attachment) {
           await interaction.reply({
             content:
-              'The message you used this command on does not contain any attachments.',
+              'The message you used this command on does not contain any attachments, embeds, or other media.',
             flags: 64, // Ephemeral
           });
+          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
         // Check if the attachment is an image or a video (to allow for video or image sequence inputs)
-        if (
-          !attachment.contentType?.startsWith('image/') &&
-          !attachment.contentType?.startsWith('video/')
-        ) {
-          await interaction.reply({
-            content:
-              'The attachment in the message you used this command on is not an image or video.',
-            flags: 64, // Ephemeral
-          });
-          return;
-        }
 
         await interaction.reply({
           content: 'Downloading your image...',
@@ -315,12 +336,20 @@ client.on('interactionCreate', async (interaction) => {
         const imageBuffer = await fetch(attachment.url).then((res) =>
           res.bytes(),
         );
-        const filename = `/tmp/orbs/${interaction.id}/orb-input.${attachment.filename
-          .split('.')
-          .pop()}`;
 
-        await mkdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
-        await writeFile(filename, imageBuffer);
+        const filename = await resolveFileTypeAndFinalizePath(
+          imageBuffer,
+          interaction,
+        );
+
+        if (!filename) {
+          await interaction.editOriginal({
+            content:
+              "I can't figure out what type of file this is, so I can't orbify it.",
+          });
+          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+          return;
+        }
 
         // Check if the downloaded file contains graphical data (is an image or image sequence/video)
         const isGraphical = await checkForGraphicalData(filename);
@@ -328,6 +357,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.editOriginal({
             content: 'The file you provided is not an image, gif, or video.',
           });
+          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
@@ -362,16 +392,48 @@ client.on('interactionCreate', async (interaction) => {
               .pop()}`;
             break;
           case 'url':
-            const url = interaction.data.options.getString('url')!;
+            let url = interaction.data.options.getString('url')!;
+
+            // Check if the URL is a Tenor URL and if so, scrape the actual media URL from the page (because Tenor doesn't want people to use their API anymore)
+            if (url.includes('tenor.com')) {
+              try {
+                const page = await fetch(url).then((res) => res.text());
+                const urlMatch = page.match(
+                  /<link rel="image_src" href="(.*?)">/,
+                );
+                if (urlMatch && urlMatch[1]) {
+                  url = urlMatch[1];
+                } else {
+                  throw new Error('Could not find media URL on Tenor page');
+                }
+              } catch (e) {
+                console.error(e);
+                await interaction.editOriginal({
+                  content:
+                    "I couldn't retrieve the media from that Tenor URL. Please make sure it's a valid Tenor URL and try again.",
+                });
+                await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+                return;
+              }
+            }
+
             imageBuffer = await fetch(url).then((res) => res.bytes());
 
-            const parsedUrl = new URL(url);
+            const potentialFilename = await resolveFileTypeAndFinalizePath(
+              imageBuffer,
+              interaction,
+            );
 
-            filename = `/tmp/orbs/${interaction.id}/orb-input.${parsedUrl.pathname
-              .split('/')
-              .pop()!
-              .split('.')
-              .pop()}`;
+            if (!potentialFilename) {
+              await interaction.editOriginal({
+                content:
+                  "I can't figure out what type of file this is, so I can't orbify it.",
+              });
+              await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+              return;
+            }
+
+            filename = potentialFilename;
             break;
           case 'user':
             const user =
@@ -422,6 +484,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.editOriginal({
             content: 'The file you provided is not an image, gif, or video.',
           });
+          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
