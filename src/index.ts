@@ -11,9 +11,8 @@ import type { CreateApplicationCommandOptions } from 'oceanic.js';
 import { config } from 'dotenv';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFile, readFile, mkdir, rmdir, rename } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, rm, rename } from 'node:fs/promises';
 import OrbQueue from './OrbQueue.ts';
-import { URL } from 'node:url';
 
 config();
 
@@ -167,10 +166,18 @@ async function addToQueueAndWork(
 async function resolveFileTypeAndFinalizePath(
   buf: Uint8Array<ArrayBufferLike>,
   interaction: CommandInteraction,
+  isAPNG = false,
 ): Promise<string | null> {
   try {
     await mkdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
     await writeFile(`/tmp/orbs/${interaction.id}/tempfile`, buf);
+    if (isAPNG) {
+      await rename(
+        `/tmp/orbs/${interaction.id}/tempfile`,
+        `/tmp/orbs/${interaction.id}/orb-input.apng`,
+      );
+      return `/tmp/orbs/${interaction.id}/orb-input.apng`;
+    }
     const fileType = (
       await execPromise(
         `file --extension -b /tmp/orbs/${interaction.id}/tempfile`,
@@ -197,12 +204,13 @@ async function orbify(interactionID: string, filename: string) {
     (entry) => entry.interaction.id === interactionID,
   )!;
   try {
-    // check if the image is a gif
-    const isGif = filename.endsWith('.gif');
-    // if it is a gif, convert it to a mp4
-    if (isGif) {
+    // check if the image is a gif or apng
+    const isUnsupportedAnimationFormat =
+      filename.endsWith('.gif') || filename.endsWith('.apng');
+    // if it is a gif or apng, convert it to a mp4
+    if (isUnsupportedAnimationFormat) {
       await interaction.editOriginal({
-        content: 'Converting your gif to a format that blender can use...',
+        content: 'Converting your gif/apng to a format that blender can use...',
       });
       const convert = await execPromise(
         `ffmpeg -i "${filename}" /tmp/orbs/${interaction.id}/orb-input.mp4`,
@@ -312,10 +320,42 @@ client.on('interactionCreate', async (interaction) => {
     switch (interaction.data.name) {
       case 'Orbify this thingy':
         const message = interaction.data.resolved.messages.first()!;
-        const attachment =
+        let attachment =
           message.attachments.first() ?? // Get the first attachment if it exists
-          message.embeds[0].thumbnail ?? // If no attachment, get the thumbnail of the first embed if it exists
-          message.embeds[0].image; // If no thumbnail, get the image of the first embed if it exists
+          message.embeds[0]?.thumbnail ?? // If no attachment, get the thumbnail of the first embed if it exists
+          message.embeds[0]?.image; // If no thumbnail, get the image of the first embed if it exists
+        let isAPNG = false;
+
+        // If the message has a sticker, grab that.
+        if (!attachment && message.stickerItems!.length > 0) {
+          const sticker = message.stickerItems![0];
+          switch (sticker.format_type) {
+            case 1: // PNG
+              attachment = {
+                url: `https://media.discordapp.net/stickers/${sticker.id}.png`,
+              };
+              break;
+            case 2: // APNG
+              attachment = {
+                url: `https://media.discordapp.net/stickers/${sticker.id}.png`,
+              };
+              isAPNG = true;
+              break;
+            case 3: // Lottie
+              interaction.reply({
+                content:
+                  "The sticker in that message is a Lottie animation, which I can't orbify. Please try again with a different message.",
+              });
+              return;
+            case 4: // GIF
+              attachment = {
+                url: `https://media.discordapp.net/stickers/${sticker.id}.gif`,
+              };
+              break;
+            default:
+              attachment = undefined;
+          }
+        }
 
         if (!attachment) {
           await interaction.reply({
@@ -323,7 +363,7 @@ client.on('interactionCreate', async (interaction) => {
               'The message you used this command on does not contain any attachments, embeds, or other media.',
             flags: 64, // Ephemeral
           });
-          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+          await rm(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
@@ -340,6 +380,7 @@ client.on('interactionCreate', async (interaction) => {
         const filename = await resolveFileTypeAndFinalizePath(
           imageBuffer,
           interaction,
+          isAPNG,
         );
 
         if (!filename) {
@@ -347,7 +388,7 @@ client.on('interactionCreate', async (interaction) => {
             content:
               "I can't figure out what type of file this is, so I can't orbify it.",
           });
-          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+          await rm(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
@@ -357,7 +398,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.editOriginal({
             content: 'The file you provided is not an image, gif, or video.',
           });
-          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+          await rm(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
@@ -412,7 +453,7 @@ client.on('interactionCreate', async (interaction) => {
                   content:
                     "I couldn't retrieve the media from that Tenor URL. Please make sure it's a valid Tenor URL and try again.",
                 });
-                await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+                await rm(`/tmp/orbs/${interaction.id}`, { recursive: true });
                 return;
               }
             }
@@ -429,7 +470,7 @@ client.on('interactionCreate', async (interaction) => {
                 content:
                   "I can't figure out what type of file this is, so I can't orbify it.",
               });
-              await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+              await rm(`/tmp/orbs/${interaction.id}`, { recursive: true });
               return;
             }
 
@@ -484,7 +525,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.editOriginal({
             content: 'The file you provided is not an image, gif, or video.',
           });
-          await rmdir(`/tmp/orbs/${interaction.id}`, { recursive: true });
+          await rm(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
