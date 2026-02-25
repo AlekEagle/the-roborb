@@ -9,6 +9,7 @@
     "typescript": "^5.8.2"
   },
   "dependencies": {
+    "cumulonimbus-wrapper": "^5.1.0",
     "dotenv": "^16.4.7",
     "oceanic.js": "^1.11.3-dev.d9f2e80"
   }

@@ -8,6 +8,7 @@ import {
   Member,
 } from 'oceanic.js';
 import type { CreateApplicationCommandOptions } from 'oceanic.js';
+import Cumulonimbus from 'cumulonimbus-wrapper';
 import { config } from 'dotenv';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -17,6 +18,10 @@ import OrbQueue from './OrbQueue.ts';
 config();
 
 const execPromise = promisify(exec);
+
+const cumulonimbus = process.env.CUMULONIMBUS_TOKEN
+  ? new Cumulonimbus(process.env.CUMULONIMBUS_TOKEN)
+  : null;
 
 const client = new Client({
   auth: `Bot ${process.env.TOKEN}`,
@@ -243,26 +248,47 @@ async function orbify(interactionID: string, filename: string) {
     await interaction.editOriginal({
       content: 'Uploading your orb...',
     });
-    const orb = await interaction.createFollowup({
-      content: `Here is your orb, ${interaction.user.mention}!`,
-      files: [
-        {
-          name: 'orb.gif',
-          contents: await readFile(
-            `/tmp/orbs/${interaction.id}/orb-256x256.gif`,
-          ),
-        },
-      ],
-    });
+
+    if (!cumulonimbus) {
+      const orb = await interaction.createFollowup({
+        content: `Here is your orb, ${interaction.user.mention}!`,
+        files: [
+          {
+            name: 'orb.gif',
+            contents: await readFile(
+              `/tmp/orbs/${interaction.id}/orb-256x256.gif`,
+            ),
+          },
+        ],
+      });
+      await interaction.deleteOriginal();
+    } else {
+      const orb = await cumulonimbus.upload(
+        await readFile(`/tmp/orbs/${interaction.id}/orb-256x256.gif`),
+        'image/gif',
+      );
+
+      await interaction.editOriginal({
+        content: `Here is your orb, ${interaction.user.mention}!`,
+        embeds: [
+          {
+            image: {
+              url: orb.result.url,
+            },
+          },
+        ],
+      });
+    }
 
     orbQueue.completeOrb(interaction.id);
-
-    await interaction.deleteOriginal();
   } catch (e) {
     console.error(e);
     interaction.reply({
       content: 'An error occurred while processing your request.',
     });
+
+    // Complete the orb in the queue so that the next one can start processing, if there is one. This is necessary to prevent the queue from getting stuck if an error occurs while processing an orb.
+    orbQueue.completeOrb(interaction.id);
   }
 }
 
@@ -327,7 +353,11 @@ client.on('interactionCreate', async (interaction) => {
         let isAPNG = false;
 
         // If the message has a sticker, grab that.
-        if (!attachment && message.stickerItems!.length > 0) {
+        if (
+          !attachment &&
+          message.stickerItems?.length &&
+          message.stickerItems.length > 0
+        ) {
           const sticker = message.stickerItems![0];
           switch (sticker.format_type) {
             case 1: // PNG

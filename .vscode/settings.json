@@ -1,3 +1,4 @@
 {
-  "cSpell.words": ["orbifier", "orbify", "Orbifying", "roborb"]
+  "cSpell.words": ["orbifier", "orbify", "Orbifying", "roborb"],
+  "postman.settings.dotenv-detection-notification-visibility": false
 }
