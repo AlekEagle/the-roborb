@@ -14,6 +14,7 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile, readFile, mkdir, rm, rename } from 'node:fs/promises';
 import OrbQueue from './OrbQueue.ts';
+import type { OrbQueueOptions } from './OrbQueue.ts';
 
 config();
 
@@ -56,6 +57,14 @@ const commands: CreateApplicationCommandOptions[] = [
             description: 'The image to orbify.',
             required: true,
           },
+          {
+            type: ApplicationCommandOptionTypes.INTEGER,
+            name: 'size',
+            description: 'The size of the orb to create. (Default: 256)',
+            required: false,
+            minValue: 1,
+            maxValue: 1920,
+          },
         ],
       },
       {
@@ -69,6 +78,14 @@ const commands: CreateApplicationCommandOptions[] = [
             description: 'The URL to an image to orbify.',
             required: true,
           },
+          {
+            type: ApplicationCommandOptionTypes.INTEGER,
+            name: 'size',
+            description: 'The size of the orb to create. (Default: 256)',
+            required: false,
+            minValue: 1,
+            maxValue: 1920,
+          },
         ],
       },
       {
@@ -81,6 +98,14 @@ const commands: CreateApplicationCommandOptions[] = [
             name: 'user',
             description: 'The user to orbify.',
             required: false,
+          },
+          {
+            type: ApplicationCommandOptionTypes.INTEGER,
+            name: 'size',
+            description: 'The size of the orb to create. (Default: 256)',
+            required: false,
+            minValue: 1,
+            maxValue: 1920,
           },
           {
             type: ApplicationCommandOptionTypes.BOOLEAN,
@@ -142,9 +167,10 @@ async function checkForGraphicalData(filename: string): Promise<boolean> {
 
 async function addToQueueAndWork(
   interaction: CommandInteraction,
+  options: OrbQueueOptions,
   filename: string,
 ) {
-  if (orbQueue.addOrb(interaction) !== 0) {
+  if (orbQueue.addOrb(interaction, options) !== 0) {
     await interaction.editOriginal({
       content: `Hang on, I'm already working on an orb, you'll have to wait. Your place in queue is: \`${orbQueue.getOrbPosition(
         interaction.id,
@@ -205,7 +231,7 @@ async function resolveFileTypeAndFinalizePath(
 }
 
 async function orbify(interactionID: string, filename: string) {
-  const { interaction } = orbQueue.orbs.find(
+  const { interaction, options } = orbQueue.orbs.find(
     (entry) => entry.interaction.id === interactionID,
   )!;
   try {
@@ -240,7 +266,7 @@ async function orbify(interactionID: string, filename: string) {
       content: 'Converting your orb into a gif...',
     });
     const convert = await execPromise(
-      `./blender-orbifier/gif-script.sh --no-default-sizes --size 256 --no-suffix /tmp/orbs/${interaction.id}/orb.mp4 /tmp/orbs/${interaction.id}/orb`,
+      `./blender-orbifier/gif-script.sh --no-default-sizes --size ${options.size} --no-suffix /tmp/orbs/${interaction.id}/orb.mp4 /tmp/orbs/${interaction.id}/orb`,
     );
 
     // console.log(convert.stdout);
@@ -255,9 +281,7 @@ async function orbify(interactionID: string, filename: string) {
         files: [
           {
             name: 'orb.gif',
-            contents: await readFile(
-              `/tmp/orbs/${interaction.id}/orb.gif`,
-            ),
+            contents: await readFile(`/tmp/orbs/${interaction.id}/orb.gif`),
           },
         ],
       });
@@ -331,7 +355,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         // Add the image to the orb queue
-        addToQueueAndWork(interaction, filename);
+        addToQueueAndWork(interaction, { size: 256 }, filename);
         break;
       default:
         interaction.editOriginal({
@@ -433,7 +457,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         // Add the image to the orb queue
-        addToQueueAndWork(interaction, filename);
+        addToQueueAndWork(interaction, { size: 256 }, filename);
         break;
       default:
         interaction.editOriginal({
@@ -453,6 +477,7 @@ client.on('interactionCreate', async (interaction) => {
 
         let imageBuffer: Uint8Array;
         let filename: string;
+        let size: number = interaction.data.options.getInteger('size') ?? 256;
 
         switch (interaction.data.options.getSubCommand(true)[0]) {
           case 'image':
@@ -560,7 +585,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         // Add the image to the orb queue
-        addToQueueAndWork(interaction, filename);
+        addToQueueAndWork(interaction, { size }, filename);
         break;
       default:
         interaction.editOriginal({
