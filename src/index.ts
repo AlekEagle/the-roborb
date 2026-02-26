@@ -293,14 +293,7 @@ async function orbify(interactionID: string, filename: string) {
       );
 
       await interaction.editOriginal({
-        content: `Here is your orb, ${interaction.user.mention}!`,
-        embeds: [
-          {
-            image: {
-              url: orb.result.url,
-            },
-          },
-        ],
+        content: `${interaction.user.mention} Here is your orb: ${orb.result.url}`,
       });
     }
 
