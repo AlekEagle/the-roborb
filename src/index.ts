@@ -240,7 +240,7 @@ async function orbify(interactionID: string, filename: string) {
       content: 'Converting your orb into a gif...',
     });
     const convert = await execPromise(
-      `./blender-orbifier/gif-script.sh /tmp/orbs/${interaction.id}/orb.mp4 /tmp/orbs/${interaction.id}/orb`,
+      `./blender-orbifier/gif-script.sh --no-default-sizes --size 256 --no-suffix /tmp/orbs/${interaction.id}/orb.mp4 /tmp/orbs/${interaction.id}/orb`,
     );
 
     // console.log(convert.stdout);
@@ -256,7 +256,7 @@ async function orbify(interactionID: string, filename: string) {
           {
             name: 'orb.gif',
             contents: await readFile(
-              `/tmp/orbs/${interaction.id}/orb-256x256.gif`,
+              `/tmp/orbs/${interaction.id}/orb.gif`,
             ),
           },
         ],
@@ -264,7 +264,7 @@ async function orbify(interactionID: string, filename: string) {
       await interaction.deleteOriginal();
     } else {
       const orb = await cumulonimbus.upload(
-        await readFile(`/tmp/orbs/${interaction.id}/orb-256x256.gif`),
+        await readFile(`/tmp/orbs/${interaction.id}/orb.gif`),
         'image/gif',
       );
 
