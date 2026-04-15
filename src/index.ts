@@ -410,7 +410,6 @@ client.on('interactionCreate', async (interaction) => {
               'The message you used this command on does not contain any attachments, embeds, or other media.',
             flags: 64, // Ephemeral
           });
-          await rm(`/tmp/orbs/${interaction.id}`, { recursive: true });
           return;
         }
 
